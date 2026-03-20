@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 import traceback 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -75,14 +75,90 @@ def replay(
             # 1. Create target repo if missing
             try:
                 target_repo = org.get_repo(target_name)
-                console.print("[yellow]Target exists — checking for incremental replay[/yellow]")
+                console.print("[yellow]Target exists — continuing incrementally[/yellow]")
             except GithubException as e:
                 if e.status == 404:
-                    target_repo = org.create_repo(target_name, private=False, auto_init=False)
-                    console.print("[green]Created new target repo[/green]")
+                    console.print("[green]Creating new target repo (will initialize with empty commit)[/green]")
+                    target_repo = org.create_repo(
+                        name=target_name,
+                        private=False,
+                        auto_init=False,          # still false — we do it manually
+                        description="Replayed history for Veracode demo"
+                    )
+
+                    # IMPORTANT: Create initial empty commit to establish default branch
+                    # Use PyGithub to create a file (even a dummy one) which creates the branch
+                    try:
+                        target_repo.create_file(
+                            path=".gitkeep",                    # or "README.md"
+                            message="Initial commit - empty repo setup",
+                            content="# Replay target repo\n\nThis repo is populated by replay-git-history.",
+                            branch=target_repo.default_branch   # usually "main"
+                        )
+                        console.print(f"[green]Initialized default branch '{target_repo.default_branch}'[/green]")
+                    except GithubException as init_e:
+                        console.print(f"[red]Failed to initialize repo: {init_e}[/red]")
+                        raise
                 else:
                     raise
+                        # State branch name
+            STATE_BRANCH = "replay-state"
 
+            # Function to get last state (returns None on first run)
+            def get_last_state(target_repo):
+                try:
+                    # Get branch ref
+                    ref = target_repo.get_branch(STATE_BRANCH)
+                    # Get latest commit on branch
+                    commit = target_repo.get_commit(ref.commit.sha)
+                    # Find blob for state.json (assume it's at root/state.json)
+                    tree = commit.commit.tree
+                    blob = None
+                    for item in tree.tree:
+                        if item.path == "state.json":
+                            blob = item
+                            break
+                    if blob:
+                        content = target_repo.get_contents("state.json", ref=STATE_BRANCH).decoded_content.decode("utf-8")
+                        return json.loads(content)
+                except GithubException as e:
+                    if e.status == 404:
+                        console.print("[yellow]No replay-state branch yet — first run[/yellow]")
+                        return None
+                    raise
+                return None
+
+            # Function to update state branch
+            def update_state_branch(target_repo, state_data):
+                state_json = json.dumps(state_data, indent=2)
+                try:
+                    # If branch exists, update file
+                    contents = target_repo.get_contents("state.json", ref=STATE_BRANCH)
+                    target_repo.update_file(
+                        path="state.json",
+                        message="Update replay state after successful run",
+                        content=state_json,
+                        sha=contents.sha,
+                        branch=STATE_BRANCH
+                    )
+                except GithubException as e:
+                    if e.status == 404:
+                        # Create branch + file
+                        # First create empty branch from main (or default)
+                        default_branch = target_repo.default_branch
+                        main_sha = target_repo.get_branch(default_branch).commit.sha
+                        target_repo.create_git_ref(ref=f"refs/heads/{STATE_BRANCH}", sha=main_sha)
+                        # Then add file
+                        target_repo.create_file(
+                            path="state.json",
+                            message="Initialize replay state",
+                            content=state_json,
+                            branch=STATE_BRANCH
+                        )
+                    else:
+                        raise
+                console.print(f"[green]Updated {STATE_BRANCH} branch with new state[/green]")
+            
             # 2. Pause for secrets/org setup reminder
             console.print(
                 "\n[bold yellow]PAUSE[/bold yellow]: Ensure org-level secrets VERACODE_API_ID / VERACODE_API_KEY are set.\n"
@@ -192,60 +268,3 @@ def replay(
 if __name__ == "__main__":
     app()
 
-# State branch name
-STATE_BRANCH = "replay-state"
-
-# Function to get last state (returns None on first run)
-def get_last_state(target_repo):
-    try:
-        # Get branch ref
-        ref = target_repo.get_branch(STATE_BRANCH)
-        # Get latest commit on branch
-        commit = target_repo.get_commit(ref.commit.sha)
-        # Find blob for state.json (assume it's at root/state.json)
-        tree = commit.commit.tree
-        blob = None
-        for item in tree.tree:
-            if item.path == "state.json":
-                blob = item
-                break
-        if blob:
-            content = target_repo.get_contents("state.json", ref=STATE_BRANCH).decoded_content.decode("utf-8")
-            return json.loads(content)
-    except GithubException as e:
-        if e.status == 404:
-            console.print("[yellow]No replay-state branch yet — first run[/yellow]")
-            return None
-        raise
-    return None
-
-# Function to update state branch
-def update_state_branch(target_repo, state_data):
-    state_json = json.dumps(state_data, indent=2)
-    try:
-        # If branch exists, update file
-        contents = target_repo.get_contents("state.json", ref=STATE_BRANCH)
-        target_repo.update_file(
-            path="state.json",
-            message="Update replay state after successful run",
-            content=state_json,
-            sha=contents.sha,
-            branch=STATE_BRANCH
-        )
-    except GithubException as e:
-        if e.status == 404:
-            # Create branch + file
-            # First create empty branch from main (or default)
-            default_branch = target_repo.default_branch
-            main_sha = target_repo.get_branch(default_branch).commit.sha
-            target_repo.create_git_ref(ref=f"refs/heads/{STATE_BRANCH}", sha=main_sha)
-            # Then add file
-            target_repo.create_file(
-                path="state.json",
-                message="Initialize replay state",
-                content=state_json,
-                branch=STATE_BRANCH
-            )
-        else:
-            raise
-    console.print(f"[green]Updated {STATE_BRANCH} branch with new state[/green]")
