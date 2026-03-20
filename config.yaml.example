@@ -1,0 +1,14 @@
+# config.yaml.example - copy to config.yaml and customize
+# SECURITY: DO NOT commit real PAT! Use export GH_PAT=... instead.
+
+org: YOUR_ORG_NAME_HERE   # e.g., veracode-demo-org 
+target_suffix: "-replay"  # optional
+max_commits: 5000         # default per repo; 0 = unlimited
+
+repos:
+  - source: https://github.com/veracode/verademo
+    branches: []                  # empty = default branch (main) only
+    major_tag_pattern: "^v[0-9]+\\."   # matches v1.*, v2.*, etc.
+    max_scans: 20                 # limit to 20 most recent MAJOR-ish tags
+    mirror_prs: false
+    scan_trigger: "tags"
