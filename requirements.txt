@@ -1,0 +1,6 @@
+typer
+pyyaml
+pygithub
+gitpython
+packaging
+rich
