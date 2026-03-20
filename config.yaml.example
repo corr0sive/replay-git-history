@@ -1,7 +1,7 @@
 # config.yaml.example - copy to config.yaml and customize
 # SECURITY: DO NOT commit real PAT! Use export GH_PAT=... instead.
 
-org: YOUR_ORG_NAME_HERE   # e.g., veracode-demo-org 
+org: veracode-history-test   # e.g., veracode-demo-org 
 target_suffix: "-replay"  # optional
 max_commits: 5000         # default per repo; 0 = unlimited
 

@@ -4,3 +4,4 @@ pygithub
 gitpython
 packaging
 rich
+traceback

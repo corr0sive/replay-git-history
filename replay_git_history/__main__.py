@@ -1,11 +1,12 @@
 
 ### Updated Code Skeleton (replay_git_history/__main__.py)
 
-```python
+#```python
 # replay_git_history/__main__.py
 import json
 import os
 import tempfile
+import traceback 
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
@@ -89,7 +90,14 @@ def replay(
             )
             input()
 
-            with tempfile.TemporaryDirectory() as tmp_dir:
+            last_state = get_last_state(target_repo)
+            if last_state:
+                last_sha = last_state.get("last_source_sha")
+                console.print(f"[cyan]Resuming from last SHA: {last_sha[:8]}[/cyan]")
+            else:
+                last_sha = None  # full replay
+
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
                 tmp = Path(tmp_dir)
                 source_path = tmp / "source"
                 target_path = tmp / "target"
@@ -144,6 +152,15 @@ def replay(
                     # target_git.config_writer().set_value("user", "email", "no-reply@veracode.com").release()
                     progress.update(task, completed=50)  # simulate
 
+                # Simulate success — replace with real after we add replay loop
+                new_state = {
+                    "last_source_sha": source_git.head.commit.hexsha,  # HEAD of source
+                    "last_replay_time": datetime.now(timezone.utc).isoformat(),
+                    "scans_triggered": summary["major_tags_triggered"],
+                    "commits_replayed_total": summary["commits_replayed"]  # update when real
+                }
+                update_state_branch(target_repo, new_state)
+
                 # Create/add Veracode workflow if first run
                 # Push tags for majors
                 # Update replay-state branch
@@ -153,9 +170,15 @@ def replay(
                     summary["warnings"].append("Submodules detected — may affect build")
                 # LFS check via .gitattributes
 
+                # Inside the with block, after you're done with them:
+                source_git.close()
+                if target_git:
+                    target_git.close()
+
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
-            summary["error"] = str(e)
+            console.print(traceback.format_exc())  # full stack trace with line numbers
+            summary["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
 
         finally:
             end_time = datetime.now()
@@ -168,3 +191,61 @@ def replay(
 
 if __name__ == "__main__":
     app()
+
+# State branch name
+STATE_BRANCH = "replay-state"
+
+# Function to get last state (returns None on first run)
+def get_last_state(target_repo):
+    try:
+        # Get branch ref
+        ref = target_repo.get_branch(STATE_BRANCH)
+        # Get latest commit on branch
+        commit = target_repo.get_commit(ref.commit.sha)
+        # Find blob for state.json (assume it's at root/state.json)
+        tree = commit.commit.tree
+        blob = None
+        for item in tree.tree:
+            if item.path == "state.json":
+                blob = item
+                break
+        if blob:
+            content = target_repo.get_contents("state.json", ref=STATE_BRANCH).decoded_content.decode("utf-8")
+            return json.loads(content)
+    except GithubException as e:
+        if e.status == 404:
+            console.print("[yellow]No replay-state branch yet — first run[/yellow]")
+            return None
+        raise
+    return None
+
+# Function to update state branch
+def update_state_branch(target_repo, state_data):
+    state_json = json.dumps(state_data, indent=2)
+    try:
+        # If branch exists, update file
+        contents = target_repo.get_contents("state.json", ref=STATE_BRANCH)
+        target_repo.update_file(
+            path="state.json",
+            message="Update replay state after successful run",
+            content=state_json,
+            sha=contents.sha,
+            branch=STATE_BRANCH
+        )
+    except GithubException as e:
+        if e.status == 404:
+            # Create branch + file
+            # First create empty branch from main (or default)
+            default_branch = target_repo.default_branch
+            main_sha = target_repo.get_branch(default_branch).commit.sha
+            target_repo.create_git_ref(ref=f"refs/heads/{STATE_BRANCH}", sha=main_sha)
+            # Then add file
+            target_repo.create_file(
+                path="state.json",
+                message="Initialize replay state",
+                content=state_json,
+                branch=STATE_BRANCH
+            )
+        else:
+            raise
+    console.print(f"[green]Updated {STATE_BRANCH} branch with new state[/green]")
